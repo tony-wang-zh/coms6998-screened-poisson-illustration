@@ -1,0 +1,90 @@
+import streamlit as st
+import matplotlib.pyplot as plt
+import numpy as np
+from geometry import get_circle, get_sine_wave, add_noise
+from solver import solve_screened_poisson
+
+st.set_page_config(layout="wide")
+st.title("Screened Poisson: Real-time Preview vs. Frozen Solve")
+
+# --- 1. SESSION STATE ---
+if 'frozen_points' not in st.session_state:
+    st.session_state.frozen_points = None
+    st.session_state.frozen_normals = None
+
+# --- 2. SIDEBAR CONTROLS ---
+st.sidebar.header("1. Point Generation (Live Preview)")
+shape_type = st.sidebar.selectbox("Base Shape", ["Circle", "Sine Wave"])
+density = st.sidebar.slider("Density", 50, 500, 200)
+noise_lvl = st.sidebar.slider("Noise", 0.0, 0.3, 0.05)
+
+# 2.1 Generate Preview Points (Live)
+p_prev, n_prev = (get_circle(density) if shape_type == "Circle" else get_sine_wave(density))
+p_prev, n_prev = add_noise(p_prev, n_prev, noise_lvl)
+
+st.sidebar.markdown("---")
+st.sidebar.header("2. Solver Parameters")
+alpha = st.sidebar.slider("Screening (Alpha)", 0.0, 100.0, 10.0)
+res = 128
+threshold = 0.5
+
+# --- 3. ACTION BUTTONS ---
+col_btn1, col_btn2 = st.sidebar.columns(2)
+if col_btn1.button("Save", use_container_width=True):
+    st.session_state.frozen_points = p_prev
+    st.session_state.frozen_normals = n_prev
+
+if col_btn2.button("Clear", use_container_width=True):
+    st.session_state.frozen_points = None
+    st.session_state.frozen_normals = None
+    st.rerun()
+
+# --- 4. THE DUAL PLOT DISPLAY ---
+fig, ax = plt.subplots(1, 2, figsize=(14, 6))
+
+# LEFT PLOT: Points (Preview or Frozen)
+if st.session_state.frozen_points is not None:
+    disp_p, disp_n = st.session_state.frozen_points, st.session_state.frozen_normals
+    ax[0].set_title("Input Points")
+    ax[0].scatter(disp_p[:, 0], disp_p[:, 1], s=12, c='green', alpha=0.6)
+else:
+    disp_p, disp_n = p_prev, n_prev
+    ax[0].set_title("Input Points Preview (Click 'Save' to Lock)")
+    ax[0].scatter(disp_p[:, 0], disp_p[:, 1], s=8, c='orange', alpha=0.4)
+
+ax[0].quiver(disp_p[:, 0], disp_p[:, 1], disp_n[:, 0], disp_n[:, 1], alpha=0.1, width=0.002)
+ax[0].set_xlim(-1.3, 1.3); ax[0].set_ylim(-1.3, 1.3); ax[0].set_aspect('equal')
+
+
+# RIGHT PLOT: The Result
+if st.session_state.frozen_points is not None:
+    with st.spinner("Solving Screened Poisson System..."):
+        chi = solve_screened_poisson(
+            res, 
+            st.session_state.frozen_points, 
+            st.session_state.frozen_normals, 
+            alpha, 
+            'dirichlet'
+        )
+    
+    im = ax[1].imshow(chi, extent=[-1, 1, -1, 1], origin='lower', cmap='RdBu_r')
+    # Use the threshold slider to find the "Surface"
+    ax[1].contour(chi, levels=[threshold], extent=[-1, 1, -1, 1], colors='black', linewidths=2)
+    ax[1].set_title(f"Reconstructed Surface (α={alpha})")
+    plt.colorbar(im, ax=ax[1])
+else:
+    ax[1].text(0.5, 0.5, "Waiting for Solver...", ha='center', va='center', fontsize=14)
+    ax[1].set_title("Reconstruction Result")
+
+ax[1].set_xlim(-1, 1); ax[1].set_ylim(-1, 1); ax[1].set_aspect('equal')
+
+st.pyplot(fig)
+
+# --- 5. LOGIC EXPLAINER ---
+with st.expander("What am I looking at?"):
+    st.write(f"""
+    - **The Scalar Field:** The red/blue background is the indicator function $\chi$. 
+    - **The Yellow Line:** This is the level-set where $\chi = {threshold}$. 
+    - **The Screening Effect:** As you increase **Alpha**, the yellow line will be forced to pass through the green dots. 
+    - **The Poisson Effect:** As you decrease **Alpha**, the yellow line will prioritize following the normal directions (arrows), often smoothing out noise.
+    """)
